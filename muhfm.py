@@ -103,6 +103,34 @@ def delete_file(state):
         **state,
         'files': refresh(state['current_dir'])
         }
+
+def toggle_preview(state):
+    return {
+        **state,
+        'show_preview': not state.get('show_preview', False)
+    }
+def get_preview_content(file_path):
+    if os.path.isdir(file_path):
+        try:
+            items = os.listdir(file_path)
+            preview = ""
+            for item in items:
+                preview += f"{item}\n"
+            return preview
+        except PermissionError:
+            return "Permission denied"
+    try:
+        text_extensions = {'.txt', '.py', '.js', '.html', '.css', '.json', '.xml', '.md', '.csv'}
+        if os.path.splitext(file_path)[1].lower() in text_extensions:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read(5000)
+                return f"{content}"
+        else:
+
+            return "Cannot preview this file"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
 key_bindings={
         ord('j'): nav_down,
         ord('h'): nav_parent,
@@ -112,7 +140,8 @@ key_bindings={
         ord('q'): lambda state: {**state, 'running': False},
         ord('y'): copy_index,
         ord('p'): paste_index,
-        ord('D'): delete_file
+        ord('D'): delete_file,
+        ord('x'): toggle_preview
         }
 
 def main(stdscr):
@@ -125,7 +154,8 @@ def main(stdscr):
         'scroll_offset': 0,
         'show_hidden': False,
         'running': True,
-        'copied_file': None
+        'copied_file': None,
+        'show_preview': False
         }
 
     while state["running"]:
@@ -146,7 +176,38 @@ def main(stdscr):
                 stdscr.addstr(i, 0, item, attr)
             except curses.error:
                 pass
+        if state.get('show_preview', False):
+            preview_width = width // 2
 
+            if state['files'] and 0 <= state['index'] < len(state['files']):
+                selected = state['files'][state['index']]
+                if selected == '..':
+                    full_path = os.path.dirname(state['current_dir'])
+                else:
+                    full_path = os.path.join(state['current_dir'], selected)
+
+                preview_content = get_preview_content(full_path)
+            else:
+                preview_content = "No selection"
+
+            for i in range(height):
+                try:
+                    stdscr.addch(i, preview_width, curses.ACS_VLINE)
+                except curses.error:
+                    pass
+
+            lines = preview_content.split('\n')
+            for i, line in enumerate(lines):
+                if i >= height:
+                    break
+                for j in range(0, len(line), preview_width - 1):
+                    if i + j//(preview_width - 1) >= height:
+                        break
+                    try:
+                        stdscr.addstr(i + j//(preview_width - 1), preview_width + 1,
+                                     line[j:j + preview_width - 1])
+                    except curses.error:
+                        pass
 
         key = stdscr.getch()
         action = key_bindings.get(key, lambda s: s)
