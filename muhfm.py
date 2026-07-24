@@ -34,6 +34,7 @@ def select_file(state):
         open_file(full_path)
         return state
 
+
 def open_file(path):
     try:
         subprocess.run(['xdg-open', path])
@@ -104,6 +105,9 @@ def delete_file(state):
         'files': refresh(state['current_dir'])
         }
 
+def make_new():
+    pass
+
 def toggle_preview(state):
     return {
         **state,
@@ -120,7 +124,7 @@ def get_preview_content(file_path):
         except PermissionError:
             return "Permission denied"
     try:
-        text_extensions = {'.txt', '.py', '.js', '.html', '.css', '.json', '.xml', '.md', '.csv'}
+        text_extensions = {'.txt', '.py', '.js', '.html', '.css', '.json', '.xml', '.md', '.csv', '.java', '.c'}
         if os.path.splitext(file_path)[1].lower() in text_extensions:
             with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read(5000)
@@ -131,12 +135,14 @@ def get_preview_content(file_path):
     except Exception as e:
         return f"Error: {str(e)}"
 
+    
 key_bindings={
         ord('j'): nav_down,
         ord('h'): nav_parent,
         ord('k'): nav_up,
         ord('l'): select_file,
         ord('.'): toggle_hidden,
+        #ord('n'): make_new,
         ord('q'): lambda state: {**state, 'running': False},
         ord('y'): copy_index,
         ord('p'): paste_index,
@@ -155,7 +161,7 @@ def main(stdscr):
         'show_hidden': False,
         'running': True,
         'copied_file': None,
-        'show_preview': False
+        'show_preview': True
         }
 
     while state["running"]:
