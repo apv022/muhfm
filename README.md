@@ -9,6 +9,17 @@ go build -o ~/.local/bin/muhfm .   # Go 1.22+, nothing to download
 muhfm --set-default                # folders now open in muhfm, from any app
 ```
 
+<p align="center"><img src="docs/tour.gif" alt="muhfm: image preview, actions menu, properties" width="900"></p>
+
+| | |
+|---|---|
+| <img src="docs/image.png" alt="real image preview in foot (sixel)" width="440"> | <img src="docs/split-menu.png" alt="split view and the actions menu" width="440"> |
+| image preview, real pixels in foot | split view, right-click or `\` for actions |
+| <img src="docs/properties.png" alt="properties with folder size" width="440"> | <img src="docs/light.png" alt="muhfm in a light theme" width="440"> |
+| `i` properties, folder size, checksums | colours follow the terminal's theme |
+
+<sub>Real screenshots: muhfm in foot under sway, captured with grim.</sub>
+
 ## What it does
 
 | | |

@@ -538,7 +538,11 @@ type style struct {
 
 var plain = style{fg: -1, bg: -1}
 
-func fg(c int8) style              { return style{fg: c, bg: -1} }
+func fg(c int8) style { return style{fg: c, bg: -1} }
+
+// dim is secondary text. It uses the terminal's faint attribute, not colour
+// 8: many themes make "bright black" nearly the background colour.
+func dim() style                   { return plain.with(aDim) }
 func (s style) with(a uint8) style { s.attr |= a; return s }
 func (s style) on(c int8) style    { s.bg = c; return s }
 
@@ -2224,7 +2228,7 @@ func buildPreview(e *entry, hidden bool) *preview {
 				asc.WriteByte('.')
 			}
 		}
-		pv.lines = append(pv.lines, sline{fmt.Sprintf("%08x  %-47s  %s", off, spaced(hex.EncodeToString(row)), asc.String()), fg(8)})
+		pv.lines = append(pv.lines, sline{fmt.Sprintf("%08x  %-47s  %s", off, spaced(hex.EncodeToString(row)), asc.String()), dim()})
 	}
 	return pv
 }
@@ -2262,28 +2266,55 @@ func sixel(img image.Image, pw, ph int) string {
 	}
 	scale := min(float64(pw)/float64(sw), float64(ph)/float64(sh), 1)
 	tw, th := max(int(float64(sw)*scale), 1), max(int(float64(sh)*scale), 1)
-	bayer := [16]int{0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5}
-	idx := make([]int16, tw*th)
+	// box-average the source into a float buffer, then quantize to the 6x6x6
+	// cube with Floyd–Steinberg error diffusion (smoother than ordered dither)
+	buf := make([][3]float64, tw*th)
+	alpha := make([]bool, tw*th)
 	for y := 0; y < th; y++ {
 		for x := 0; x < tw; x++ {
-			// box-average the source block that maps to this pixel
 			x0, x1 := b.Min.X+x*sw/tw, b.Min.X+max((x+1)*sw/tw, x*sw/tw+1)
 			y0, y1 := b.Min.Y+y*sh/th, b.Min.Y+max((y+1)*sh/th, y*sh/th+1)
 			stepX, stepY := max((x1-x0)/4, 1), max((y1-y0)/4, 1)
-			var r, g, bl, a, n uint32
+			var r, g, bl, a, n float64
 			for sy := y0; sy < y1; sy += stepY {
 				for sx := x0; sx < x1; sx += stepX {
 					c := color.NRGBAModel.Convert(img.At(sx, sy)).(color.NRGBA)
-					r, g, bl, a, n = r+uint32(c.R), g+uint32(c.G), bl+uint32(c.B), a+uint32(c.A), n+1
+					r, g, bl, a, n = r+float64(c.R), g+float64(c.G), bl+float64(c.B), a+float64(c.A), n+1
 				}
 			}
-			if a/n < 128 {
-				idx[y*tw+x] = -1
+			buf[y*tw+x] = [3]float64{r / n, g / n, bl / n}
+			alpha[y*tw+x] = a/n >= 128
+		}
+	}
+	idx := make([]int16, tw*th)
+	spread := func(x, y int, e [3]float64, w float64) {
+		if x < 0 || x >= tw || y >= th {
+			return
+		}
+		p := &buf[y*tw+x]
+		for c := 0; c < 3; c++ {
+			p[c] += e[c] * w
+		}
+	}
+	for y := 0; y < th; y++ {
+		for x := 0; x < tw; x++ {
+			i := y*tw + x
+			if !alpha[i] {
+				idx[i] = -1
 				continue
 			}
-			t := bayer[(y%4)*4+x%4]*51/16 - 25
-			q := func(v uint32) int { return min(max((int(v/n)+t)*5/255, 0), 5) }
-			idx[y*tw+x] = int16(q(r)*36 + q(g)*6 + q(bl))
+			var q [3]int
+			var e [3]float64
+			for c := 0; c < 3; c++ {
+				v := min(max(buf[i][c], 0), 255)
+				q[c] = int(v*5/255 + 0.5)
+				e[c] = v - float64(q[c]*51)
+			}
+			idx[i] = int16(q[0]*36 + q[1]*6 + q[2])
+			spread(x+1, y, e, 7.0/16)
+			spread(x-1, y+1, e, 3.0/16)
+			spread(x, y+1, e, 5.0/16)
+			spread(x+1, y+1, e, 1.0/16)
 		}
 	}
 	var o strings.Builder
@@ -2933,7 +2964,7 @@ func (a *app) draw() {
 			if tb.pane().kind == kTrash {
 				name = "Trash"
 			}
-			st := fg(8)
+			st := dim()
 			if i == a.ti {
 				st = fg(3).with(aBold | aRev)
 			}
@@ -2966,7 +2997,7 @@ func (a *app) draw() {
 	if a.cfg.places && a.w >= 70 {
 		sw := min(max(a.w/6, 16), 24)
 		a.drawPlaces(g, 0, 1, sw, bh)
-		g.vline(sw, 1, 1+bh, fg(8))
+		g.vline(sw, 1, 1+bh, dim())
 		x = sw + 1
 	}
 	rest := a.w - x
@@ -2974,13 +3005,13 @@ func (a *app) draw() {
 	case t.split:
 		pw := rest / 2
 		a.drawPane(g, t.panes[0], x, 1, pw, bh, t.active == 0)
-		g.vline(x+pw, 1, 1+bh, fg(8))
+		g.vline(x+pw, 1, 1+bh, dim())
 		a.drawPane(g, t.panes[1], x+pw+1, 1, rest-pw-1, bh, t.active == 1)
 		a.noSixel()
 	case a.cfg.preview && rest >= 50:
 		lw := rest / 2
 		a.drawPane(g, p, x, 1, lw, bh, true)
-		g.vline(x+lw, 1, 1+bh, fg(8))
+		g.vline(x+lw, 1, 1+bh, dim())
 		a.drawPreview(g, x+lw+1, 1, rest-lw-1, bh)
 	default:
 		a.drawPane(g, p, x, 1, rest, bh, true)
@@ -3017,7 +3048,7 @@ func (a *app) drawPlaces(g *grid, x0, y0, w, h int) {
 			if y >= y0+h {
 				break
 			}
-			g.text(x0+1, y, x0+w, pl.section, fg(8).with(aBold))
+			g.text(x0+1, y, x0+w, pl.section, plain.with(aBold))
 			y++
 		}
 		if y >= y0+h {
@@ -3028,7 +3059,7 @@ func (a *app) drawPlaces(g *grid, x0, y0, w, h int) {
 			st = fg(3).with(aBold)
 		}
 		if pl.dev != nil && pl.dev.mount == "" {
-			st = fg(8)
+			st = dim()
 		}
 		g.text(x0+1, y, x0+w, pl.icon+" "+fit(pl.label, w-4, false), st)
 		a.hits = append(a.hits, hit{x0: x0, y0: y, x1: x0 + w, y1: y + 1, kind: "place", idx: i})
@@ -3048,7 +3079,7 @@ func (a *app) drawPane(g *grid, p *pane, x0, y0, w, h int, active bool) {
 		p.top = max(len(p.view)-h, 0)
 	}
 	if len(p.view) == 0 {
-		msg, st := "empty", fg(8).with(aItal)
+		msg, st := "empty", dim().with(aItal)
 		switch {
 		case p.err != "":
 			msg, st = p.err, fg(1)
@@ -3072,10 +3103,12 @@ func (a *app) drawPane(g *grid, p *pane, x0, y0, w, h int, active bool) {
 		st := kindStyle(k)
 		sel := p.sel[e.path]
 		cursor := i == p.cur
+		// the cursor row gets a background, not reverse video: the name keeps
+		// its type colour and the row reads as one bar
 		base := plain
 		if cursor && active {
-			base = plain.with(aRev)
-			st = st.with(aRev)
+			base = plain.on(8)
+			st = st.on(8).with(aBold)
 		} else if cursor {
 			base = plain.on(0)
 			st = st.on(0)
@@ -3087,7 +3120,7 @@ func (a *app) drawPane(g *grid, p *pane, x0, y0, w, h int, active bool) {
 		}
 		mst := fg(3).with(aBold)
 		if cursor && active {
-			mst = mst.with(aRev)
+			mst = mst.on(8)
 		} else if cursor {
 			mst = mst.on(0)
 		}
@@ -3131,9 +3164,9 @@ func (a *app) drawPane(g *grid, p *pane, x0, y0, w, h int, active bool) {
 			tgt := " → " + e.link
 			nm := fit(name, nameW, true)
 			xx = g.text(xx, y, x0+w, nm, st)
-			lst := fg(8)
+			lst := dim()
 			if cursor && active {
-				lst = lst.with(aRev)
+				lst = lst.on(8)
 			} else if cursor {
 				lst = lst.on(0)
 			}
@@ -3142,9 +3175,9 @@ func (a *app) drawPane(g *grid, p *pane, x0, y0, w, h int, active bool) {
 			g.text(xx, y, x0+w, fit(name, nameW, true), st)
 		}
 		if right != "" {
-			rst := fg(8)
+			rst := dim()
 			if cursor && active {
-				rst = rst.with(aRev)
+				rst = rst.on(8)
 			} else if cursor {
 				rst = rst.on(0)
 			}
@@ -3155,7 +3188,7 @@ func (a *app) drawPane(g *grid, p *pane, x0, y0, w, h int, active bool) {
 		th := max(h*h/len(p.view), 1)
 		ty := y0 + p.top*(h-th)/max(len(p.view)-h, 1)
 		for y := ty; y < ty+th && y < y0+h; y++ {
-			g.set(x0+w-1, y, cell{"▐", 1, fg(8)})
+			g.set(x0+w-1, y, cell{"▐", 1, dim()})
 		}
 	}
 }
@@ -3212,11 +3245,11 @@ func (a *app) drawPreview(g *grid, x0, y0, w, h int) {
 	x0++
 	w--
 	if pv.loading {
-		g.text(x0, y0, x0+w, "…", fg(8))
+		g.text(x0, y0, x0+w, "…", dim())
 		a.noSixel()
 		return
 	}
-	g.text(x0, y0, x0+w, fit(pv.head, w, false), fg(8).with(aItal))
+	g.text(x0, y0, x0+w, fit(pv.head, w, false), dim().with(aItal))
 	if pv.img != nil {
 		if a.sixOn && a.t.cellW > 0 {
 			bw, bh := w, h-2
@@ -3240,7 +3273,7 @@ func (a *app) drawPreview(g *grid, x0, y0, w, h int) {
 			return
 		}
 		a.noSixel()
-		g.text(x0, y0+2, x0+w, "(image preview needs a sixel terminal such as foot)", fg(8))
+		g.text(x0, y0+2, x0+w, "(image preview needs a sixel terminal such as foot)", dim())
 		return
 	}
 	a.noSixel()
@@ -3332,7 +3365,7 @@ func (a *app) drawStatus(g *grid) {
 	}
 	right += "  ? help "
 	if strWidth(right) < a.w-x {
-		g.text(a.w-strWidth(right), y, a.w, right, fg(8).on(0))
+		g.text(a.w-strWidth(right), y, a.w, right, dim().on(0))
 	}
 }
 
@@ -3386,42 +3419,44 @@ func (a *app) drawMenu(g *grid) {
 			st = plain
 		}
 		if m.top+r == m.cur {
-			g.fill(x0+1, y, x0+bw-1, y+1, plain.with(aRev))
-			st = st.with(aRev)
+			g.fill(x0+1, y, x0+bw-1, y+1, plain.on(8))
+			st = st.on(8).with(aBold)
 		}
 		x := x0 + 2
 		if it.hot != "" {
 			hs := fg(3).with(aBold)
 			if m.top+r == m.cur {
-				hs = hs.with(aRev)
+				hs = hs.on(8)
 			}
 			x = g.text(x, y, x0+bw-2, it.hot+"  ", hs)
 		}
 		x = g.text(x, y, x0+bw-2, fit(it.label, x0+bw-3-x-strWidth(it.hint), false), st)
 		if it.hint != "" {
-			hs := fg(8)
+			hs := dim()
 			if m.top+r == m.cur {
-				hs = hs.with(aRev)
+				hs = hs.on(8)
 			}
 			g.text(x0+bw-2-strWidth(it.hint), y, x0+bw-2, it.hint, hs)
 		}
 	}
 	if len(m.shown) == 0 {
-		g.text(x0+2, y0+1, x0+bw-2, "no matches", fg(8))
+		g.text(x0+2, y0+1, x0+bw-2, "no matches", dim())
 	}
 	if foot != "" || m.filter != "" {
 		s := foot
 		if m.filter != "" {
 			s = "/" + m.filter
 		}
-		g.text(x0+2, y0+bh-2, x0+bw-2, fit(s, bw-4, false), fg(8).with(aItal))
+		g.text(x0+2, y0+bh-2, x0+bw-2, fit(s, bw-4, false), dim().with(aItal))
 	}
 }
 
 func (a *app) drawOverlay(g *grid) {
 	o := a.over
-	bw, bh := min(a.w-4, 100), a.h-4
-	x0, y0 := (a.w-bw)/2, 2
+	// fit the box to its content: short panels stay small, long ones scroll
+	bw, bh := min(a.w-4, 100), min(a.h-4, len(o.lines)+3)
+	bh = max(bh, 6)
+	x0, y0 := (a.w-bw)/2, max((a.h-bh)/2, 1)
 	g.box(x0, y0, x0+bw, y0+bh, o.title, fg(3), fg(3).with(aBold))
 	inner := bh - 3
 	o.scroll = min(max(o.scroll, 0), max(len(o.lines)-inner, 0))
@@ -3430,7 +3465,7 @@ func (a *app) drawOverlay(g *grid) {
 		g.text(x0+2, y0+1+i, x0+bw-2, l.s, l.st)
 	}
 	ft := firstOf(o.footer, "j/k scroll · q close")
-	g.text(x0+2, y0+bh-2, x0+bw-2, ft, fg(8).with(aItal))
+	g.text(x0+2, y0+bh-2, x0+bw-2, ft, dim().with(aItal))
 }
 
 func (a *app) flush(g *grid) {
@@ -4668,7 +4703,7 @@ func (a *app) jumpMenu() {
 		if i >= 15 {
 			break
 		}
-		items = append(items, mitem{label: "◷ " + filepath.Base(r), hint: tilde(r), st: fg(8)})
+		items = append(items, mitem{label: "◷ " + filepath.Base(r), hint: tilde(r), st: dim()})
 		ds = append(ds, dest{path: r})
 	}
 	a.menu = &menu{title: "Go to", items: items, filterable: true, pick: func(i int, _ string) {
@@ -4854,7 +4889,7 @@ func (a *app) openWithMenu() {
 		}
 		st := plain
 		if i >= nRec {
-			st = fg(8)
+			st = dim()
 		}
 		items = append(items, mitem{label: ap.name, hint: hint, st: st})
 	}
@@ -5078,7 +5113,7 @@ func (a *app) du(o *overlay, row int, ps []string) {
 }
 
 func (a *app) checksums(o *overlay, p string) {
-	o.lines = append(o.lines, sline{"", plain}, sline{"computing checksums…", fg(8)})
+	o.lines = append(o.lines, sline{"", plain}, sline{"computing checksums…", dim()})
 	at := len(o.lines) - 1
 	go func() {
 		f, err := os.Open(p)
